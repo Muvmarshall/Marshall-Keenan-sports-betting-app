@@ -1,4 +1,4 @@
-# Parlay platform
+# Project Parlay
 
 An NFL player-prop research and parlay-construction tool. The thesis: show the
 honest expected value of every selection, and never promise a win.
@@ -29,13 +29,17 @@ npm install
 cp server/.env.example server/.env
 # edit server/.env if your DATABASE_URL differs from the default
 
-# 2. Create the schema and seed one NFL slate
+# 2. Create the schema and seed one NFL slate (real nflverse data by default —
+#    needs network access; use STATS_SOURCE=mock for a fully offline seed)
 npm run db:migrate
 npm run seed
 
 # 3. Run both apps (two terminals)
 npm run dev:server   # http://localhost:4000
 npm run dev:web      # http://localhost:5173 (proxies /api to :4000)
+
+# 4. Run the reference-case tests
+npm test
 ```
 
 The seed script wipes and repopulates every table (`TRUNCATE ... RESTART
@@ -115,6 +119,169 @@ All of this lives in `packages/shared/src/math.ts` and is unit-verifiable by
 hand against any single prop — see the worked example in the build brief
 (Rashee Rice, 55.5 receiving yards, 2.00x, 57.8% fair → +7.8% edge), which the
 seed script reproduces exactly.
+
+## Verification endpoint
+
+`GET /api/verify/fair?over=-110&under=-110&multiplier=2.00` — public, permanent,
+not a dev tool. Accepts American (`-110`, `+120`) or decimal (`1.9091`) odds,
+auto-detected (`|price| >= 100` → American; anything else → decimal — decimal
+odds for a two-way market are never that high, American odds are never that
+low, by convention). Returns every intermediate value: the decimal conversion,
+raw implied probability, overround, de-vigged fair probability, breakeven, and
+edge — so a stranger can check the math by hand from the response alone. The
+`/verify` page in the UI is the same calculator with the four reference cases
+below pre-loaded as buttons, linked from the footer on every page.
+
+These four cases are the ones that actually prove the vig is being removed,
+not just averaged away — row 1 is the load-bearing one: a symmetric -110/-110
+market is a coin flip, so a 2.00x multiplier must show exactly zero edge.
+They're automated tests (`packages/shared/src/verify.test.ts`, run with
+`npm test`), not just documentation:
+
+| over | under | mult | fair (over) | edge |
+|---|---|---|---|---|
+| -110 | -110 | 2.00 | 0.5000 | +0.0000 |
+| -130 | +110 | 2.00 | 0.5427 | +0.0427 |
+| -200 | +165 | 2.00 | 0.6386 | +0.1386 |
+| +120 | -140 | 1.80 | 0.4380 | −0.1176 |
+
+## Closing-line value and the grading pipeline
+
+Every poll, for every prop where `|edge| >= 1%`, a snapshot is written to
+`edge_log` — deliberately not deduplicated to one row per prop. A prop that
+stays flagged for six hours of 60-second polling produces ~360 rows, each an
+independent observation graded against its own closing line; that's what
+makes closing-line value (CLV) a distribution instead of a single number.
+
+Once a prop's game passes kickoff and a closing (`is_close`) odds observation
+exists, `edge_close` is written: the fair probability at close, whether the
+line moved toward the flagged side, and `clv_points` (signed toward that
+side). Once the real outcome is known, `edge_result` is written: the actual
+stat value and whether it hit. **CLV is the headline metric, not hit rate** —
+a single slate is noise; line movement agreeing with a flag is signal within
+days. The public `/results` page (linked from the footer) reads only these
+three tables, breaks results down by stat type, edge size, and week, and
+flags every figure under 100 flags as low-sample rather than hiding it —
+including losing weeks, which are shown, not filtered out.
+
+Settlement (`server/src/lib/settlement.ts`) is pluggable
+(`ActualStatResolver`). The default, `MockSettlementResolver`, is used only
+when there's no real game to observe: it draws a plausible outcome from the
+player's own recent average and tags every row it writes
+`source='mock-settlement'` — never presented as a real result. A `nflverse`-
+backed resolver (real box scores once published) is a natural follow-up,
+sharing the same weekly data this build already fetches for game logs — not
+wired in yet.
+
+A daily digest (`server/src/lib/dailyDigest.ts`) computes yesterday's totals
+(flagged, closed, settled, avg CLV, hit rate) and "sends" it once a day near
+09:00 ET. No email provider is configured in this build — delivery goes
+through a `DigestSender` interface, and the default `ConsoleDigestSender`
+logs the digest as structured output instead of silently doing nothing. Wire
+in a real provider (Resend, SES, SendGrid) by implementing that same
+interface.
+
+## Stale data handling
+
+Every prop's edge carries an `observedAt` timestamp — the *oldest*
+observation among every book (and the platform) that fed into that number,
+not the newest, so one stale contributing book can't hide behind fresher
+ones. The threshold card degrades in three steps as that age grows:
+
+- **Under 5 minutes**: timestamp shown in the normal ink-faint color.
+- **5–15 minutes**: timestamp switches to `--caution`.
+- **Over 15 minutes**: the card desaturates, the edge/multiplier/fair-estimate
+  row is replaced with "Price is stale — last seen HH:MM", and "Add to slip"
+  disables. This happens from real data aging, not just a forced test — see
+  the screenshot in this project's history where one card on a live-seeded
+  page genuinely hit this state because that particular book/side hadn't
+  changed in the recent polls.
+
+Separately, `FeedStatusContext` polls `/api/health` every 30s and shows a
+persistent banner — **no edge values render anywhere** — only on an explicit
+failure signal (the health endpoint itself unreachable, or the poller's last
+run erroring), never from a hardcoded staleness clock. A live deployment on a
+free odds-API key might legitimately poll every 6 hours; that's not "the feed
+is down," and the banner logic knows the difference because `/api/health`
+reports the deployment's actual configured poll interval.
+
+## Data provenance
+
+Team and player statistics come from
+[nflverse](https://github.com/nflverse/nflverse-data) (CC-BY 4.0, open data) —
+`server/src/lib/nflverse.ts` fetches two release files (team-season and
+player-week box scores), caches them to `server/data/cache/` after first
+fetch, and every downstream value traces back to one of those two files. No
+site is scraped.
+
+Controlled by `STATS_SOURCE`, defaulting to `nflverse` (`npm run seed`) —
+Phase 2 states real provenance as the requirement, not an opt-in, so a plain
+seed uses it. Set `STATS_SOURCE=mock` explicitly for offline dev or a
+network-restricted CI run; that path is unchanged from Phase 1, including the
+mockup-exact showcase numbers.
+
+What's real in `nflverse` mode:
+
+- **Rosters** — each team's actual top players by real 2025 season production
+  (most passing/rushing/receiving yards at each position), not invented names.
+- **Player game logs** — real weekly box scores for those players. (The
+  calendar date on each row is synthesized from season+week, since nflverse's
+  weekly file has no literal date column — only the date is approximated; the
+  stat values themselves are exactly what nflverse published.)
+- **Team offense** — yards/play and EPA/play straight from the team-season
+  file.
+- **Team defense** — yards/play and EPA/play *derived* by aggregating every
+  opponent's real production in games against that team (nflverse doesn't
+  publish a separate "allowed" file, but the weekly file's `opponent_team`
+  column makes this a straightforward aggregation, not an estimate).
+
+What's NOT available without full play-by-play data (a much larger fetch this
+build doesn't do) — **omitted and labeled, never faked**, per spec: "If any
+required stat is unavailable from a licensed source, omit the stat and note
+it. Do not approximate it and present it as measured":
+
+- `success_rate`, `explosive_pct`, `havoc_pct` — these are per-play
+  classifications with no season/week-summary equivalent.
+- `opponents_faced_rank` (strength of schedule) — same reason.
+
+The UI shows "not available" for these rather than a zero or a guess (see
+`MatchupTab.tsx`'s `pctOrNA` and `RankBadge`'s null handling) — this took a
+real bug fix to get right: `Number(null)` and `null * 100` both evaluate to
+`0` in JavaScript, which had been silently turning "we don't know" into a
+fake "0.0%" before the fix. The Matchup tab's insight engine also skips its
+strength-of-schedule rule entirely when the inputs are null (`null <= 10` is
+`true` in JS — another place a naive comparison would have fired an insight
+on missing data) and falls back to an EPA-differential rule that works with
+real data's one guaranteed per-play metric.
+
+`team_total` props (used for one correlation-flag pattern) have no nflverse
+equivalent either — see the assumptions list.
+
+## Age gate and legal pages
+
+A blocking, full-screen confirmation on first visit (`AgeGate.tsx`) states
+plainly that this is a research tool, not a sportsbook, and requires 21+
+before the rest of the app is reachable. The acknowledgment is stored in
+`localStorage` only — no server round trip, no account. `/terms` and
+`/privacy` are real routes with real structure (section headings that mirror
+what a real policy would cover) but every section body is an explicit
+`DRAFT — PENDING LEGAL REVIEW` placeholder — per spec, "do not write legal
+language," so none was written.
+
+## Operations
+
+- `/api/health` reports database connectivity, the poller's last run (time,
+  ok/error, props seen, rows written) and its configured interval, and row
+  counts for `edge_log`/`edge_close`/`edge_result`.
+- Every poll writes one structured JSON log line (`poll_complete`: props seen,
+  rows written, flags checked, closes/settlements written, errors) — grep or
+  pipe to a log aggregator as-is.
+- The daily digest (above) is the other scheduled job; both run only from
+  `index.ts` (a persistent process), never from the Vercel serverless path.
+- Slip contents are never sent anywhere but this app's own Postgres — there is
+  no third-party analytics integration anywhere in this codebase (verified by
+  reading every `fetch`/HTTP call site, not just asserted) for that
+  requirement to violate.
 
 ## Live odds feed
 
@@ -231,6 +398,51 @@ the `OddsProvider` interface.
     market — `theOddsApiProvider.ts` has no mapping for it and will throw if
     asked to fetch one. Live mode simply won't produce that correlation flag
     until a real team-totals source is wired in separately.
+
+### Phase 2
+
+13. **`edge_log` logs every qualifying poll, not one row per prop.** Read
+    literally from spec section 2 ("On every poll... write a snapshot"), not
+    deduplicated. This means a prop that stays flagged for hours produces many
+    correlated observations rather than one — a deliberate reading, not an
+    oversight, and the one that makes a CLV *distribution* possible. Flagged
+    explicitly in case a single-row-per-prop design was actually intended.
+14. **Verification endpoint's edge is always for the "over" side.** Unlike the
+    rest of the app (which reports whichever side has the larger edge), the
+    four reference cases are defined against "over" specifically, so
+    `verifyFair` matches them exactly rather than picking a "primary" side.
+15. **Mock settlement, not real settlement, by default.** There is no live
+    score feed in this build. `MockSettlementResolver` draws a plausible
+    outcome from the player's own recent average rather than inventing one
+    from nothing, and tags every row `source='mock-settlement'` so it's never
+    confused with a real result. A `nflverse`-backed real resolver is a
+    natural follow-up (the weekly data it would need is already fetched for
+    game logs) but isn't wired in.
+16. **Daily digest logs instead of emailing.** No email provider credentials
+    exist in this build. `DigestSender` is pluggable; the default
+    `ConsoleDigestSender` writes structured output so the digest is never
+    silently dropped, but nothing is actually emailed until a real provider
+    is configured.
+17. **`STATS_SOURCE` defaults to `nflverse`, not `mock`.** Phase 2 states real
+    provenance as the requirement, not an opt-in enhancement — so the default
+    seed behavior changed, not just an available flag. `STATS_SOURCE=mock`
+    is the explicit, documented escape hatch for offline work.
+18. **Real rosters are today's actual top producers, not a fixed list.** In
+    `nflverse` mode, each team's roster is computed (top passer/rushers/
+    receivers by real season yardage), not hardcoded — so it reflects
+    whichever season's data is fetched, not a snapshot frozen at build time.
+19. **Game log dates are approximated; the stats themselves are not.**
+    nflverse's weekly file has no calendar-date column, only season+week, so
+    `player_game_logs.date` is synthesized (a fixed per-season anchor + 7
+    days/week) purely to preserve chronological ordering. Every stat value on
+    that row is the real, unmodified nflverse figure.
+20. **`success_rate`/`explosive_pct`/`havoc_pct`/`opponents_faced_rank` are
+    `NULL` in `nflverse` mode**, not zero or estimated — they need full
+    play-by-play data this build doesn't fetch. The Matchup tab shows "not
+    available" for them explicitly, and the insight engine's
+    strength-of-schedule rule is skipped (not fired on a null-coerced-to-0
+    comparison) when they're missing, falling back to an EPA-differential
+    insight that works with real data's one guaranteed per-play metric.
 
 ## What's deliberately not built (v1 scope, per the brief)
 

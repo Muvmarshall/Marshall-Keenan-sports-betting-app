@@ -9,6 +9,15 @@ export interface PropEdgeSide {
   fairProbability: number;
   edge: number;
   label: ReturnType<typeof edgeCallLabel>;
+  /** Sportsbooks that contributed to the consensus fair probability, for attribution. */
+  booksUsed: string[];
+  /**
+   * The OLDEST observed_at among every row (book + platform) that went into this
+   * number — not the newest. If one contributing book hasn't updated in 20
+   * minutes while the rest updated a minute ago, the consensus is only as fresh
+   * as its stalest input. Drives the stale-data UI degradation.
+   */
+  observedAt: string;
 }
 
 export interface PropEdgeData {
@@ -22,12 +31,17 @@ interface LatestRow {
   book: string;
   side: Side;
   price_decimal: string;
+  observed_at: string | Date; // pg returns TIMESTAMPTZ as a Date, not a string
+}
+
+function olderOf(a: string | Date, b: string | Date): string | Date {
+  return new Date(a).getTime() <= new Date(b).getTime() ? a : b;
 }
 
 /** Latest known consensus + platform state for a single prop, used to compute edge on demand. */
 export async function getPropEdgeData(propId: number): Promise<PropEdgeData> {
   const { rows } = await pool.query<LatestRow>(
-    `SELECT DISTINCT ON (book, side) book, side, price_decimal
+    `SELECT DISTINCT ON (book, side) book, side, price_decimal, observed_at
      FROM prop_odds
      WHERE prop_id = $1
      ORDER BY book, side, observed_at DESC`,
@@ -54,6 +68,10 @@ export async function getPropEdgeData(propId: number): Promise<PropEdgeData> {
           priceUnder: side === 'over' ? priceOpp : priceThis,
           weight: 1,
           observedAt: new Date().toISOString(),
+          // The actual observation timestamp, oldest of the pair — kept separate
+          // from the `observedAt` field above (which BookQuote requires but this
+          // codebase doesn't otherwise use for staleness).
+          rawObservedAt: olderOf(r.observed_at, opposite.observed_at),
         };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
@@ -65,6 +83,8 @@ export async function getPropEdgeData(propId: number): Promise<PropEdgeData> {
     const multiplier = Number(platformRow.price_decimal);
     const edgeResult = edgeForSelection(multiplier, fairProbability);
 
+    const oldestObservedAt = paired.reduce((acc, p) => olderOf(acc, p.rawObservedAt), platformRow.observed_at);
+
     result[side] = {
       side,
       multiplier,
@@ -72,6 +92,8 @@ export async function getPropEdgeData(propId: number): Promise<PropEdgeData> {
       fairProbability,
       edge: edgeResult.edge,
       label: edgeCallLabel(edgeResult.edge),
+      booksUsed: paired.map((p) => p.book),
+      observedAt: new Date(oldestObservedAt).toISOString(),
     };
   }
 

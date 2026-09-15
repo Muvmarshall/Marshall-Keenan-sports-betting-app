@@ -1,6 +1,8 @@
 import { pool } from './db/pool.js';
 import { getOddsProvider, PLATFORM_BOOK } from './odds/index.js';
 import { writeOddsTick } from './db/writeOddsTick.js';
+import { logFlagIfQualifying, closeQualifyingFlags } from './lib/edgeLogging.js';
+import { settleQualifyingFlags } from './lib/settlement.js';
 import type { StatType } from '@parlay/shared';
 
 const CLOSE_WINDOW_MS = 5 * 60 * 1000;
@@ -12,9 +14,29 @@ interface ActiveProp {
   kickoff_utc: string;
   home_team: string;
   away_team: string;
+  player_id: number;
   player_name: string;
+  game_id: number;
   stat_type: StatType;
 }
+
+export interface PollStatus {
+  lastRunAt: string | null;
+  lastRunOk: boolean;
+  propsSeen: number;
+  rowsWritten: number;
+  flagsLogged: number;
+  errors: number;
+}
+
+export const pollStatus: PollStatus = {
+  lastRunAt: null,
+  lastRunOk: true,
+  propsSeen: 0,
+  rowsWritten: 0,
+  flagsLogged: 0,
+  errors: 0,
+};
 
 /** Polls every active prop on a fixed interval and writes odds ticks only on change. */
 export function startPoller(intervalMs: number): NodeJS.Timeout {
@@ -22,12 +44,20 @@ export function startPoller(intervalMs: number): NodeJS.Timeout {
 
   const run = async () => {
     const { rows: props } = await pool.query<ActiveProp>(
-      `SELECT pr.id, pr.line, g.kickoff_utc, g.home_team, g.away_team, p.name AS player_name, pr.stat_type
+      `SELECT pr.id, pr.line, g.id AS game_id, g.kickoff_utc, g.home_team, g.away_team,
+              p.id AS player_id, p.name AS player_name, pr.stat_type
        FROM props pr
        JOIN games g ON g.id = pr.game_id
        JOIN players p ON p.id = pr.player_id
-       WHERE g.status != 'final'`,
+       WHERE g.status != 'final'
+         AND NOT EXISTS (
+           SELECT 1 FROM prop_odds po WHERE po.prop_id = pr.id AND po.is_close = true
+         )`,
     );
+
+    let rowsWritten = 0;
+    let flagsLogged = 0;
+    let errors = 0;
 
     for (const prop of props) {
       try {
@@ -56,17 +86,62 @@ export function startPoller(intervalMs: number): NodeJS.Timeout {
           statType: prop.stat_type,
           line: Number(prop.line),
         });
-        await writeOddsTick(prop.id, tick, { markClose: msToKickoff <= CLOSE_WINDOW_MS });
+        rowsWritten += await writeOddsTick(prop.id, tick, { markClose: msToKickoff <= CLOSE_WINDOW_MS });
+
+        await logFlagIfQualifying({
+          propId: prop.id,
+          playerId: prop.player_id,
+          gameId: prop.game_id,
+          statType: prop.stat_type,
+        });
+        flagsLogged += 1;
       } catch (err) {
         // One prop failing to match/fetch (common with a live feed — a player not
         // posted this week, a market-key mismatch) must not stop the rest from
         // updating.
+        errors += 1;
         console.error(`poll failed for prop ${prop.id} (${prop.player_name} ${prop.stat_type}):`, err);
       }
     }
+
+    const closed = await closeQualifyingFlags().catch((err) => {
+      console.error('closeQualifyingFlags failed:', err);
+      return 0;
+    });
+    const settled = await settleQualifyingFlags().catch((err) => {
+      console.error('settleQualifyingFlags failed:', err);
+      return 0;
+    });
+
+    pollStatus.lastRunAt = new Date().toISOString();
+    pollStatus.lastRunOk = errors === 0;
+    pollStatus.propsSeen = props.length;
+    pollStatus.rowsWritten = rowsWritten;
+    pollStatus.flagsLogged = flagsLogged;
+    pollStatus.errors = errors;
+
+    console.log(
+      JSON.stringify({
+        event: 'poll_complete',
+        propsSeen: props.length,
+        rowsWritten,
+        flagsChecked: flagsLogged,
+        edgeClosesWritten: closed,
+        edgeResultsSettled: settled,
+        errors,
+      }),
+    );
   };
 
   // Deliberately does not fire an immediate poll on boot: that would blow away the
   // seed script's opening/closing observations the instant the server starts.
-  return setInterval(() => run().catch((err) => console.error('poller tick failed', err)), intervalMs);
+  return setInterval(
+    () =>
+      run().catch((err) => {
+        pollStatus.lastRunAt = new Date().toISOString();
+        pollStatus.lastRunOk = false;
+        console.error('poller tick failed', err);
+      }),
+    intervalMs,
+  );
 }

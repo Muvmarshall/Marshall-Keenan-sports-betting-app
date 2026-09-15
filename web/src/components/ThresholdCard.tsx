@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { PlayerPropCard } from '../lib/api.js';
 import { EdgePill } from './EdgePill.js';
+import { useFeedStatus } from '../context/FeedStatusContext.js';
 
 interface ThresholdCardProps {
   playerName: string;
@@ -10,6 +11,10 @@ interface ThresholdCardProps {
   inSlip: boolean;
   onAdd: () => void;
 }
+
+const CAUTION_AGE_MS = 5 * 60 * 1000;
+const STALE_AGE_MS = 15 * 60 * 1000;
+const TIME_FORMAT = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
 
 function barHeight(value: number, line: number, maxDiff: number): number {
   const diff = Math.abs(value - line);
@@ -52,21 +57,46 @@ function useCountUp(target: number, durationMs = 600): number {
   return value;
 }
 
+/** Ticks every 30s so a card's displayed staleness updates while it stays on screen. */
+function useNow(intervalMs = 30_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
 export function ThresholdCard({ playerName, position, team, prop, inSlip, onAdd }: ThresholdCardProps) {
   const { line, last5, edge } = prop;
   const primary = edge.primary;
   const maxDiff = Math.max(1, ...last5.map((v) => Math.abs(v - line)));
   const animatedEdge = useCountUp(primary ? primary.edge : 0);
+  const { reachable, checked } = useFeedStatus();
+  const now = useNow();
+
+  const feedDown = checked && !reachable;
+  const ageMs = primary ? now - new Date(primary.observedAt).getTime() : 0;
+  const isCaution = primary !== null && ageMs >= CAUTION_AGE_MS && ageMs < STALE_AGE_MS;
+  const isStale = primary !== null && ageMs >= STALE_AGE_MS;
+  const suppressed = feedDown || isStale || !primary;
 
   return (
-    <div className="mb-[11px] rounded-card bg-surface px-4 py-[15px]">
+    <div className={`mb-[11px] rounded-card bg-surface px-4 py-[15px] ${isStale || feedDown ? 'saturate-0' : ''}`}>
       <div className="mb-[3px] flex items-baseline justify-between">
         <span className="font-cond text-xl font-semibold text-ink">{playerName}</span>
         <span className="text-xs text-ink-dim">
           {position} · {team}
         </span>
       </div>
-      <div className="text-xs text-ink-dim">{prop.statLabel} · last 5</div>
+      <div className="flex items-baseline justify-between">
+        <div className="text-xs text-ink-dim">{prop.statLabel} · last 5</div>
+        {primary && !feedDown && (
+          <span className={`tabular text-[11px] ${isCaution || isStale ? 'text-caution' : 'text-ink-faint'}`}>
+            {isStale ? `last seen ${TIME_FORMAT.format(new Date(primary.observedAt))}` : `as of ${TIME_FORMAT.format(new Date(primary.observedAt))}`}
+          </span>
+        )}
+      </div>
 
       <div className="relative my-[13px] h-[62px]">
         <div className="absolute left-0 right-0 top-[31px] h-px bg-rule" />
@@ -94,29 +124,43 @@ export function ThresholdCard({ playerName, position, team, prop, inSlip, onAdd 
       </div>
 
       <div className="flex items-center justify-between border-t border-rule pt-[11px]">
-        <div className="flex gap-4">
-          {primary && (
-            <>
+        {suppressed ? (
+          <p className="text-[13px] text-ink-faint">
+            {feedDown
+              ? 'Feed unreachable — no edge shown.'
+              : isStale && primary
+                ? `Price is stale — last seen ${TIME_FORMAT.format(new Date(primary.observedAt))}.`
+                : 'No price posted yet.'}
+          </p>
+        ) : (
+          <>
+            <div className="flex gap-4">
               <div>
-                <div className="tabular font-cond text-[17px] font-semibold leading-tight text-ink">{primary.multiplier.toFixed(2)}x</div>
-                <div className="text-[11px] text-ink-faint">needs {(primary.breakeven * 100).toFixed(1)}%</div>
+                <div className="tabular font-cond text-[17px] font-semibold leading-tight text-ink">{primary!.multiplier.toFixed(2)}x</div>
+                <div className="text-[11px] text-ink-faint">needs {(primary!.breakeven * 100).toFixed(1)}%</div>
               </div>
               <div>
-                <div className="tabular font-cond text-[17px] font-semibold leading-tight text-ink">{(primary.fairProbability * 100).toFixed(1)}%</div>
+                <div className="tabular font-cond text-[17px] font-semibold leading-tight text-ink">{(primary!.fairProbability * 100).toFixed(1)}%</div>
                 <div className="text-[11px] text-ink-faint">fair estimate</div>
               </div>
-            </>
-          )}
-        </div>
-        {primary && <EdgePill edge={animatedEdge} label={primary.label} />}
+            </div>
+            <EdgePill edge={animatedEdge} label={primary!.label} />
+          </>
+        )}
       </div>
 
       <button
         onClick={onAdd}
-        disabled={inSlip}
-        className="mt-3 w-full rounded-[9px] border border-rule py-2 text-center font-cond text-sm font-medium text-ink-dim disabled:cursor-default disabled:border-signal disabled:bg-signal-bg disabled:text-signal enabled:hover:border-ink-dim enabled:hover:text-ink"
+        disabled={inSlip || suppressed}
+        className={`mt-3 w-full rounded-[9px] border py-2 text-center font-cond text-sm font-medium ${
+          inSlip
+            ? 'cursor-default border-signal bg-signal-bg text-signal'
+            : suppressed
+              ? 'cursor-default border-rule text-ink-faint'
+              : 'border-rule text-ink-dim hover:border-ink-dim hover:text-ink'
+        }`}
       >
-        {inSlip ? 'On your slip' : 'Add to slip'}
+        {inSlip ? 'On your slip' : suppressed ? 'Unavailable' : 'Add to slip'}
       </button>
     </div>
   );

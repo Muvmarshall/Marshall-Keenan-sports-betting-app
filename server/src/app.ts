@@ -6,6 +6,9 @@ import { matchupRouter } from './routes/matchup.js';
 import { playersRouter } from './routes/players.js';
 import { movementRouter } from './routes/movement.js';
 import { slipsRouter } from './routes/slips.js';
+import { verifyRouter } from './routes/verify.js';
+import { healthRouter } from './routes/health.js';
+import { resultsRouter } from './routes/results.js';
 
 /**
  * The Express app alone, with no listener attached — reused by index.ts (a normal
@@ -17,12 +20,14 @@ export const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.use('/api', healthRouter);
 app.use('/api', gamesRouter);
 app.use('/api', matchupRouter);
 app.use('/api', playersRouter);
 app.use('/api', movementRouter);
 app.use('/api', slipsRouter);
+app.use('/api', verifyRouter);
+app.use('/api', resultsRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);

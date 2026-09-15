@@ -1,11 +1,14 @@
 interface RankBadgeProps {
-  rank: number;
+  rank: number | null;
   totalTeams?: number;
   className?: string;
 }
 
 /** Rank coloring per spec: top tier signal, middle ink-dim, bottom tier caution. Always shows the numeral. */
 export function RankBadge({ rank, totalTeams = 12, className = '' }: RankBadgeProps) {
+  if (rank === null) {
+    return <span className={`font-cond text-ink-faint ${className}`}>not available</span>;
+  }
   const tierSize = Math.max(1, Math.round(totalTeams * 0.31));
   const color =
     rank <= tierSize ? 'text-signal' : rank > totalTeams - tierSize ? 'text-caution' : 'text-ink-dim';

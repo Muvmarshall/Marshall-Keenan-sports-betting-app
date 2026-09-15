@@ -14,7 +14,8 @@ interface CandidateRow {
  * changed from the last observation for that (prop, book, side) — polling every
  * interval and writing every poll would produce millions of identical rows.
  */
-export async function writeOddsTick(propId: number, tick: OddsTick, opts: { markClose?: boolean } = {}): Promise<void> {
+export async function writeOddsTick(propId: number, tick: OddsTick, opts: { markClose?: boolean } = {}): Promise<number> {
+  let written = 0;
   const rows: CandidateRow[] = [];
   for (const q of tick.bookQuotes) {
     rows.push({ book: q.book, side: 'over', price: q.priceOver, multiplier: q.priceOver });
@@ -50,5 +51,7 @@ export async function writeOddsTick(propId: number, tick: OddsTick, opts: { mark
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [propId, row.book, row.side, row.price, row.multiplier, isFirst, !!opts.markClose],
     );
+    written += 1;
   }
+  return written;
 }

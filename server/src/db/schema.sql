@@ -102,3 +102,47 @@ CREATE TABLE IF NOT EXISTS slip_legs (
   multiplier_at_add   NUMERIC NOT NULL,
   edge_at_add         NUMERIC NOT NULL
 );
+
+-- Phase 2: the track record. edge_log is written on every poll for every prop
+-- currently flagged (|edge| >= 1%) — deliberately not deduplicated to one row per
+-- prop, so the same prop staying flagged across many polls produces many
+-- observations, each independently graded against its own closing line. This is
+-- what makes closing-line value the primary metric rather than a single snapshot.
+CREATE TABLE IF NOT EXISTS edge_log (
+  id                  SERIAL PRIMARY KEY,
+  prop_id             INTEGER NOT NULL REFERENCES props(id) ON DELETE CASCADE,
+  player_id           INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  game_id             INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  stat_type           TEXT NOT NULL,
+  side                TEXT NOT NULL, -- over|under
+  line_at_flag        NUMERIC NOT NULL,
+  multiplier_at_flag  NUMERIC NOT NULL,
+  fair_prob_at_flag   NUMERIC NOT NULL,
+  edge_at_flag        NUMERIC NOT NULL,
+  books_used          TEXT[] NOT NULL,
+  observed_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_edge_log_prop_time ON edge_log (prop_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_edge_log_game ON edge_log (game_id);
+
+-- One closing snapshot per edge_log row, written once the game's kickoff has
+-- passed and a closing (is_close) odds observation exists for that prop.
+CREATE TABLE IF NOT EXISTS edge_close (
+  edge_log_id             INTEGER PRIMARY KEY REFERENCES edge_log(id) ON DELETE CASCADE,
+  line_at_close           NUMERIC NOT NULL,
+  multiplier_at_close     NUMERIC NOT NULL,
+  fair_prob_at_close      NUMERIC NOT NULL,
+  line_moved_toward_flag  BOOLEAN NOT NULL,
+  clv_points              NUMERIC NOT NULL,
+  closed_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One settlement per edge_log row, written once the real outcome is known.
+CREATE TABLE IF NOT EXISTS edge_result (
+  edge_log_id       INTEGER PRIMARY KEY REFERENCES edge_log(id) ON DELETE CASCADE,
+  actual_stat_value NUMERIC NOT NULL,
+  hit               BOOLEAN NOT NULL,
+  source            TEXT NOT NULL, -- nflverse|mock-settlement — see README "Data provenance"
+  graded_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);

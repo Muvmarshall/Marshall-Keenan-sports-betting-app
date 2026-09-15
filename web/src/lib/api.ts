@@ -21,6 +21,8 @@ export interface PropEdgeSide {
   fairProbability: number;
   edge: number;
   label: 'positive' | 'negative' | 'too_close_to_call';
+  booksUsed: string[];
+  observedAt: string;
 }
 
 export interface PropEdgeData {
@@ -47,7 +49,7 @@ export interface PlayerBlock {
   name: string;
   position: string;
   team: string;
-  opponentRank: { split: string; srRank: number; epaRank: number } | null;
+  opponentRank: { split: string; srRank: number | null; epaRank: number } | null;
   props: PlayerPropCard[];
 }
 
@@ -56,13 +58,15 @@ export interface TeamStatSide {
   split: 'overall' | 'rush' | 'pass';
   side: 'offense' | 'defense';
   yardsPerPlay: number;
-  successRate: number;
+  // No source without play-by-play data in nflverse mode — null means genuinely
+  // unavailable, never rendered as a fake zero. See README "Data provenance."
+  successRate: number | null;
   epa: number;
-  srRank: number;
+  srRank: number | null;
   epaRank: number;
-  explosivePct: number;
-  havocPct: number;
-  opponentsFacedRank: number;
+  explosivePct: number | null;
+  havocPct: number | null;
+  opponentsFacedRank: number | null;
 }
 
 export interface MatchupResponse {
@@ -111,6 +115,26 @@ export function fetchPlayers(gameId: number): Promise<{ positions: Record<string
 
 export function fetchMovement(gameId: number): Promise<{ markets: MovementMarket[] }> {
   return getJson(`/games/${gameId}/movement`);
+}
+
+export interface VerifyFairResult {
+  input: { over: number; under: number; multiplier: number };
+  decimal: { over: number; under: number };
+  rawImplied: { over: number; under: number };
+  overround: number;
+  fair: { over: number; under: number };
+  breakeven: number;
+  edge: number;
+  label: 'positive' | 'negative' | 'too_close_to_call';
+}
+
+export async function fetchVerifyFair(over: number, under: number, multiplier: number): Promise<VerifyFairResult> {
+  const res = await fetch(`${BASE}/verify/fair?over=${over}&under=${under}&multiplier=${multiplier}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed: ${res.status}`);
+  }
+  return res.json();
 }
 
 export async function postSlip(payload: {

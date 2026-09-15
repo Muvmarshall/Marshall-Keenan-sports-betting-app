@@ -23,17 +23,22 @@ matchupRouter.get('/games/:id/matchup', async (req, res) => {
     [[game.home_team, game.away_team], SEASON],
   );
 
+  // Number(null) === 0 in JS — that would silently turn "unavailable" (real NULL,
+  // when a stat has no licensed source; see nflverse.ts) into a fake zero. These
+  // fields must stay null when the DB value is null.
+  const nullableNumber = (v: unknown): number | null => (v === null ? null : Number(v));
+
   const toSide = (r: any): TeamStatSide => ({
     teamAbbrev: r.team_abbrev,
     split: r.split,
     side: r.side,
     yardsPerPlay: Number(r.yards_per_play),
-    successRate: Number(r.success_rate),
+    successRate: nullableNumber(r.success_rate),
     epa: Number(r.epa),
     srRank: r.sr_rank,
     epaRank: r.epa_rank,
-    explosivePct: Number(r.explosive_pct),
-    havocPct: Number(r.havoc_pct),
+    explosivePct: nullableNumber(r.explosive_pct),
+    havocPct: nullableNumber(r.havoc_pct),
     opponentsFacedRank: r.opponents_faced_rank,
   });
 

@@ -56,6 +56,10 @@ export function MatchupTab({ gameId, matchup: initial }: Props) {
   );
 }
 
+function pctOrNA(x: number | null): string {
+  return x === null ? 'n/a' : `${(x * 100).toFixed(1)}%`;
+}
+
 function SplitRow({ label, offense, defense }: { label: string; offense: TeamStatSide; defense: TeamStatSide }) {
   return (
     <div className="mb-2 rounded-card bg-surface px-4 py-3">
@@ -63,8 +67,8 @@ function SplitRow({ label, offense, defense }: { label: string; offense: TeamSta
       <StatLine label="Yards per play" offVal={offense.yardsPerPlay.toFixed(2)} defVal={defense.yardsPerPlay.toFixed(2)} />
       <StatLine
         label="Success rate"
-        offVal={`${(offense.successRate * 100).toFixed(1)}%`}
-        defVal={`${(defense.successRate * 100).toFixed(1)}%`}
+        offVal={pctOrNA(offense.successRate)}
+        defVal={pctOrNA(defense.successRate)}
         offRank={offense.srRank}
         defRank={defense.srRank}
       />
@@ -86,21 +90,27 @@ function SplitRow({ label, offense, defense }: { label: string; offense: TeamSta
       <div className="mt-2 grid grid-cols-2 gap-3 border-t border-rule pt-2">
         <div>
           <div className="text-[11px] text-ink-faint">Explosive play rate</div>
-          <div className="tabular font-cond text-sm font-medium text-ink">{(offense.explosivePct * 100).toFixed(1)}%</div>
+          <div className="tabular font-cond text-sm font-medium text-ink">{pctOrNA(offense.explosivePct)}</div>
         </div>
         <div>
           <div className="text-[11px] text-ink-faint">Explosive allowed</div>
-          <div className="tabular font-cond text-sm font-medium text-ink">{(defense.explosivePct * 100).toFixed(1)}%</div>
+          <div className="tabular font-cond text-sm font-medium text-ink">{pctOrNA(defense.explosivePct)}</div>
         </div>
         <div>
           <div className="text-[11px] text-ink-faint">Havoc allowed</div>
-          <div className="tabular font-cond text-sm font-medium text-ink">{(offense.havocPct * 100).toFixed(1)}%</div>
+          <div className="tabular font-cond text-sm font-medium text-ink">{pctOrNA(offense.havocPct)}</div>
         </div>
         <div>
           <div className="text-[11px] text-ink-faint">Havoc created</div>
-          <div className="tabular font-cond text-sm font-medium text-ink">{(defense.havocPct * 100).toFixed(1)}%</div>
+          <div className="tabular font-cond text-sm font-medium text-ink">{pctOrNA(defense.havocPct)}</div>
         </div>
       </div>
+      {(offense.successRate === null || offense.explosivePct === null) && (
+        <p className="mt-2 border-t border-rule pt-2 text-[11px] text-ink-faint">
+          Success rate, explosive-play rate, havoc rate, and strength of schedule need play-by-play data this build
+          doesn't fetch — not available for real-data games. See README "Data provenance."
+        </p>
+      )}
     </div>
   );
 }
@@ -115,8 +125,8 @@ function StatLine({
   label: string;
   offVal: string;
   defVal: string;
-  offRank?: number;
-  defRank?: number;
+  offRank?: number | null;
+  defRank?: number | null;
 }) {
   return (
     <div className="flex items-center justify-between py-1">

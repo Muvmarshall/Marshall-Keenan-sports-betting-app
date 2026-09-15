@@ -41,8 +41,17 @@ export function PlayersTab({ gameId }: { gameId: number }) {
             <div key={player.playerId} className="mb-3">
               {player.opponentRank && (
                 <div className="mb-1 px-1 text-[11px] text-ink-faint">
-                  Opponent {player.opponentRank.split} defense ranked {player.opponentRank.srRank}
-                  {ordinalSuffix(player.opponentRank.srRank)} in success rate
+                  {player.opponentRank.srRank !== null ? (
+                    <>
+                      Opponent {player.opponentRank.split} defense ranked {player.opponentRank.srRank}
+                      {ordinalSuffix(player.opponentRank.srRank)} in success rate
+                    </>
+                  ) : (
+                    <>
+                      Opponent {player.opponentRank.split} defense ranked {player.opponentRank.epaRank}
+                      {ordinalSuffix(player.opponentRank.epaRank)} in EPA/play (success rate not available)
+                    </>
+                  )}
                 </div>
               )}
               {player.props.map((prop) => {

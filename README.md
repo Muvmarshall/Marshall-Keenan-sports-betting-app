@@ -51,6 +51,40 @@ with duplicate rows. It deliberately does **not** fire an immediate poll on
 boot, so the seed's opening/closing observations survive the first minute
 after a restart. Set `ENABLE_POLLER=false` to freeze the market for a demo.
 
+## Deploying to Vercel
+
+The app deploys as a single Vercel project: `web/` builds to static assets,
+and `api/[...all].ts` wraps the same Express app (`server/src/app.ts`) as one
+serverless function, so both live on the same domain with no CORS setup.
+`vercel.json` at the repo root already has the build command and the SPA
+rewrite. What Vercel can't do for you:
+
+1. **Provision Postgres.** In the Vercel dashboard, open the project's
+   **Storage** tab → **Create Database** → Postgres (this is Neon under the
+   hood). Vercel injects `DATABASE_URL` into the project's env vars
+   automatically. Use the *pooled* connection string if you're offered a
+   choice — a serverless function shouldn't hold a direct, unpooled
+   connection open.
+2. **Run migrate + seed against that database once**, from anywhere that can
+   reach it (your machine, or hand me the connection string and I'll run
+   it): `DATABASE_URL=<the pooled string> npm run db:migrate && DATABASE_URL=<...> npm run seed`.
+3. **Deploy** — connect the GitHub repo in the Vercel dashboard (auto-deploys
+   on push), or run `vercel --prod` with a token from
+   vercel.com/account/tokens.
+
+**The 60-second poller does not run on Vercel, on purpose.** It's a
+`setInterval` in `index.ts`, which needs a persistent process — a
+serverless function has none; each invocation is spun up, handles one
+request, and can be frozen or recycled at any time. `api/[...all].ts`
+imports `app.ts`, not `index.ts`, specifically so the poller's code path is
+never reached there, rather than silently failing. Deployed this way, the
+Movement tab shows exactly the seeded historical ticks and stops — which is
+complete and honest for a **mock-data** demo, but is not "live" in the sense
+of odds actually moving while someone has the page open. Getting real
+60-second refresh on Vercel means replacing the `setInterval` with a Vercel
+Cron Job hitting a `/api/poll` route on a schedule — a real change, not a
+config flag, and out of scope until it's actually needed.
+
 ## The EV math
 
 Every prop is graded against the multiplier the platform pays, not against a

@@ -1,0 +1,8 @@
+{
+  "buildCommand": "npm run build --workspace packages/shared && npm run build --workspace web",
+  "outputDirectory": "web/dist",
+  "installCommand": "npm install",
+  "rewrites": [
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}

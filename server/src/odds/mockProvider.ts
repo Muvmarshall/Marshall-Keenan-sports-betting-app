@@ -40,7 +40,7 @@ export class MockOddsProvider implements OddsProvider {
     return rng;
   }
 
-  tick(ctx: PropContext): OddsTick {
+  async tick(ctx: PropContext): Promise<OddsTick> {
     const rng = this.rngFor(ctx.propId);
     let s = this.state.get(ctx.propId);
     if (!s) {

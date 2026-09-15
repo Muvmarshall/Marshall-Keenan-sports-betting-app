@@ -330,7 +330,12 @@ async function main() {
   const propRows = propDefs.map((p) => [p.gameId, p.playerId, p.statType, p.line, p.createdAt.toISOString()]);
   await bulkInsert('props', ['game_id', 'player_id', 'stat_type', 'line', 'created_at'], propRows);
   const { rows: propIdRows } = await pool.query(
-    'SELECT id, game_id, player_id, stat_type, line FROM props ORDER BY id',
+    `SELECT pr.id, pr.game_id, pr.player_id, pr.stat_type, pr.line,
+            g.home_team, g.away_team, g.kickoff_utc, pl.name AS player_name
+     FROM props pr
+     JOIN games g ON g.id = pr.game_id
+     JOIN players pl ON pl.id = pr.player_id
+     ORDER BY pr.id`,
   );
 
   console.log(`Seeding odds history for ${propIdRows.length} props...`);
@@ -375,7 +380,16 @@ async function main() {
         });
         platform = { over: fixed.multiplier, under: round2(1.93 / fixed.multiplier) } as Record<Side, number>;
       } else {
-        const t = provider.tick({ propId: prop.id, statBaselineProbability: 0.5 });
+        const t = await provider.tick({
+          propId: prop.id,
+          statBaselineProbability: 0.5,
+          homeTeam: prop.home_team,
+          awayTeam: prop.away_team,
+          kickoffUtc: prop.kickoff_utc,
+          playerName: prop.player_name,
+          statType: prop.stat_type,
+          line: Number(prop.line),
+        });
         books = t.bookQuotes.map((q) => ({ book: q.book, over: q.priceOver, under: q.priceUnder }));
         platform = t.platformMultiplier;
       }

@@ -1,8 +1,16 @@
-import type { BookQuote, Side } from '@parlay/shared';
+import type { BookQuote, Side, StatType } from '@parlay/shared';
 
 export interface PropContext {
   propId: number;
-  statBaselineProbability: number; // rough fair probability the line represents, drives the random walk
+  statBaselineProbability: number; // rough fair probability the line represents, drives the mock's random walk
+  // Everything below is unused by the mock but is what a real feed needs to find
+  // this exact market: which event, which player, which stat, which line.
+  homeTeam: string;
+  awayTeam: string;
+  kickoffUtc: string;
+  playerName: string;
+  statType: StatType;
+  line: number;
 }
 
 export interface OddsTick {
@@ -13,8 +21,13 @@ export interface OddsTick {
 }
 
 export interface OddsProvider {
-  /** Advance (or initialize) the market for one prop by a single tick and return the new quotes. */
-  tick(ctx: PropContext): OddsTick;
+  /**
+   * Advance (or initialize) the market for one prop by a single tick and return the
+   * new quotes. Async because a real provider fetches over the network — the mock
+   * is synchronous internally but still returns a resolved promise, so every call
+   * site awaits uniformly regardless of which implementation is active.
+   */
+  tick(ctx: PropContext): Promise<OddsTick>;
 }
 
 export const SPORTSBOOKS: { name: string; weight: number }[] = [

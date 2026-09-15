@@ -11,8 +11,9 @@ honest expected value of every selection, and never promise a win.
   used to grade a prop and the math used to roll up a slip are the same code,
   not two reimplementations that can drift apart.
 - **`server`** — Express + TypeScript API, PostgreSQL via `pg`. Odds access is
-  behind an `OddsProvider` interface (`server/src/odds/`) with a mock
-  implementation and a live-feed stub.
+  behind an `OddsProvider` interface (`server/src/odds/`), with a mock
+  implementation, a real implementation against The Odds API, and a stub for
+  any other feed.
 - **`web`** — React + TypeScript + Vite + Tailwind, mobile-first (390px),
   configured with the exact color/type/spacing tokens from the design brief.
   No accounts — the slip lives in `localStorage` under an anonymous client id.
@@ -115,15 +116,57 @@ hand against any single prop — see the worked example in the build brief
 (Rashee Rice, 55.5 receiving yards, 2.00x, 57.8% fair → +7.8% edge), which the
 seed script reproduces exactly.
 
-## Swapping in a live odds feed
+## Live odds feed
 
-`server/src/odds/liveProviderStub.ts` implements the same `OddsProvider`
-interface as the mock (`tick(ctx) => OddsTick`). Wire a real feed (The Odds
-API, SportsDataIO, etc.) into its `tick()` method, mapping the response into
-`{ bookQuotes: BookQuote[], platformMultiplier: Record<Side, number> }`, and
-set `ODDS_PROVIDER=live` in `server/.env`. Nothing else changes — the routes,
-the poller, and the seed script all depend on the interface, not on which
-implementation is active.
+`server/src/odds/theOddsApiProvider.ts` is a real implementation against
+[The Odds API](https://the-odds-api.com) v4, gated behind `ODDS_PROVIDER=live`
++ `ODDS_API_KEY` in `server/.env`. **I wrote this without being able to test
+it** — this sandbox's network egress policy blocks `the-odds-api.com` (and
+`sportsdata.io`), so I could not fetch their docs or a real response before
+writing the field mappings. It's implemented from documented knowledge of a
+stable, widely-used API, not verified live. Before trusting it:
+
+```bash
+curl "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/EVENT_ID/odds\
+?apiKey=YOUR_KEY&regions=us&markets=player_pass_yds&oddsFormat=decimal"
+```
+
+and compare the shape to `EventOddsResponse` in that file. The market-key
+strings in `STAT_TYPE_TO_MARKET` (e.g. `player_pass_yds`) are the most likely
+point of drift — they're a guess at the API's naming, not a confirmed value.
+If a player's props don't show up, check `matchesPlayer()`'s name comparison
+next — "Marvin Mims Jr." in our seed data vs. however the feed spells it is a
+real risk. Each prop's poll failure is caught and logged individually
+(`poller.ts`), so one mismatch won't take down the rest.
+
+**What "platform multiplier" means changes in live mode.** The mock's
+platform multiplier represents this product's own payout, deliberately
+lagging the true market — that's what makes its edge a genuine "one market
+disagreeing with another" signal (see the EV math section above). There's no
+real feed for that: sportsbook odds APIs don't publish a DFS platform's
+payout table. So `theOddsApiProvider.ts` reinterprets it: one representative
+retail book (DraftKings, if posted) stands in for "platform," and the fair
+probability is the consensus of every *other* book. The edge this produces is
+real — it's a line-shopping signal, is this book mispriced relative to the
+rest of the market — but it is not the same claim the mock's edge makes, and
+the UI doesn't currently say which mode produced a given number. That's a
+follow-up, not something to gloss over.
+
+**Request budget.** Player props are a per-event endpoint
+(`/events/{id}/odds`), not the bulk odds endpoint, and each market you
+request costs against a free-tier monthly quota (historically ~500
+requests/month). The provider caches each event's odds for 90 seconds so
+every prop in the same game shares one fetch within a poll cycle, but that
+does not save you across cycles — polling every 60 seconds will exhaust a
+free key in hours, not weeks. Set `POLL_INTERVAL_MS` to something like
+`21600000` (6 hours) on a free key; this is exactly the "free tier: slow
+refresh, not real movement tracking" tier, not the 60-second tier.
+
+To wire up a different provider instead, `server/src/odds/liveProviderStub.ts`
+shows the interface shape (`tick(ctx) => Promise<OddsTick>`) with no
+implementation. Nothing outside `server/src/odds/` depends on which
+implementation is active — routes, the poller, and the seed script only see
+the `OddsProvider` interface.
 
 ## Assumptions and simplifications
 
@@ -182,6 +225,12 @@ implementation is active.
     reasonable. The pipeline (schema, odds simulation, insight rules) is
     identical at any slate size — extending `TEAMS`/`gameDefs` in
     `server/src/scripts/seed.ts` is the only change needed for a full week.
+12. **`team_total` has no live equivalent.** It exists in the mock/schema for
+    the rushing-vs-team-total correlation flag (section 3.7 of the brief),
+    but The Odds API's player-prop markets don't include a team-total
+    market — `theOddsApiProvider.ts` has no mapping for it and will throw if
+    asked to fetch one. Live mode simply won't produce that correlation flag
+    until a real team-totals source is wired in separately.
 
 ## What's deliberately not built (v1 scope, per the brief)
 
